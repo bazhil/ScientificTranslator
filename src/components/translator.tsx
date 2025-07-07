@@ -29,6 +29,11 @@ import {
   ClipboardCheck,
 } from "lucide-react";
 import { handleTranslation } from "@/app/actions";
+import mammoth from "mammoth";
+import * as pdfjsLib from "pdfjs-dist";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+
 
 const languages = [
   "Spanish", "French", "German", "Japanese", "Chinese (Simplified)", "Russian", "Arabic", "Portuguese", "Italian", "Korean"
@@ -45,22 +50,50 @@ export function Translator() {
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      if (file.type === "text/plain") {
-        const text = await file.text();
+      try {
+        let text = "";
+        if (file.type === "text/plain") {
+          text = await file.text();
+        } else if (file.type === "application/pdf") {
+          const arrayBuffer = await file.arrayBuffer();
+          const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+          const numPages = pdf.numPages;
+          const pageTexts = await Promise.all(
+            Array.from({ length: numPages }, async (_, i) => {
+              const page = await pdf.getPage(i + 1);
+              const textContent = await page.getTextContent();
+              return textContent.items.map((item: any) => item.str).join(" ");
+            })
+          );
+          text = pageTexts.join("\n");
+        } else if (file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+          const arrayBuffer = await file.arrayBuffer();
+          const result = await mammoth.extractRawText({ arrayBuffer });
+          text = result.value;
+        } else {
+          toast({
+            variant: "destructive",
+            title: "Unsupported file type",
+            description: "Currently, only .txt, .pdf, and .docx files are supported.",
+          });
+          return;
+        }
         setOriginalText(text);
         toast({
           title: "File uploaded",
           description: "The content of the file has been loaded into the text area.",
         });
-      } else {
+      } catch (error) {
+        console.error("Error processing file:", error);
         toast({
           variant: "destructive",
-          title: "Unsupported file type",
-          description: "Currently, only .txt files are supported for direct upload.",
+          title: "Error processing file",
+          description: "There was an issue extracting text from the file.",
         });
+      } finally {
+        // Reset file input value to allow re-uploading the same file
+        event.target.value = "";
       }
-      // Reset file input value to allow re-uploading the same file
-      event.target.value = "";
     }
   };
 
@@ -124,7 +157,7 @@ export function Translator() {
               Original Text
             </CardTitle>
             <CardDescription>
-              Upload a .txt file or paste your scientific text below.
+              Upload a .txt, .pdf, or .docx file, or paste your text below.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -138,11 +171,11 @@ export function Translator() {
                       className="relative font-semibold text-primary cursor-pointer hover:underline focus-within:outline-none focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2"
                     >
                       <span>Upload a file</span>
-                      <input id="file-upload" name="file-upload" type="file" className="sr-only" accept=".txt" onChange={handleFileChange} />
+                      <input id="file-upload" name="file-upload" type="file" className="sr-only" accept=".txt,.pdf,.docx" onChange={handleFileChange} />
                     </label>
                     {" "}or drag and drop
                   </p>
-                  <p className="text-xs text-muted-foreground mt-1">.txt files only</p>
+                  <p className="text-xs text-muted-foreground mt-1">.txt, .pdf, and .docx files are supported</p>
                 </div>
               </div>
 
