@@ -34,14 +34,11 @@ Follow these instructions to get a copy of the project up and running on your lo
     ```
 
 3.  **Set up environment variables:**
-    Create a `.env.local` file in the root of your project and add your AI provider API key. You can copy the example file:
-    ```bash
-    cp .env.example .env.local
-    ```
-    Then, edit `.env.local`:
+    An empty `.env` file has been created for you. Add your Google API key to it:
     ```
     GOOGLE_API_KEY=YOUR_API_KEY_HERE
     ```
+    You can get your API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
 
 4.  **Run the development server:**
     ```bash
