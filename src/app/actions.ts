@@ -25,21 +25,20 @@ function splitTextIntoChunks(text: string, chunkSize: number): string[] {
     return [text];
   }
 
-  // Split by newlines to respect paragraph structure. The regex includes newlines in the result.
+  // Split by newlines to respect paragraph structure
   const parts = text.split(/(\n+)/);
   let currentChunk = '';
 
   for (const part of parts) {
     if (part.length > chunkSize) {
-      // If current chunk is not empty, push it
       if (currentChunk) {
         chunks.push(currentChunk);
+        currentChunk = '';
       }
-      // If the part itself is too large, split it by force
+      // Split large part into smaller chunks
       for (let i = 0; i < part.length; i += chunkSize) {
         chunks.push(part.substring(i, i + chunkSize));
       }
-      currentChunk = '';
     } else if (currentChunk.length + part.length > chunkSize) {
       chunks.push(currentChunk);
       currentChunk = part;
@@ -72,19 +71,19 @@ export async function handleTranslation(formData: FormData): Promise<Translation
   try {
     const textToTranslate = validatedFields.data.text;
     const targetLanguage = validatedFields.data.targetLanguage;
-
     const chunks = splitTextIntoChunks(textToTranslate, CHUNK_SIZE);
-    
-    const translationPromises = chunks.map(chunk => 
-      translateScientificText({
+
+    let translatedText = '';
+
+    // Process chunks sequentially
+    for (const chunk of chunks) {
+      const result = await translateScientificText({
         text: chunk,
         targetLanguage: targetLanguage,
-      })
-    );
+      });
 
-    const translatedChunksResults = await Promise.all(translationPromises);
-    
-    const translatedText = translatedChunksResults.map(result => result.translatedText).join('');
+      translatedText += result.translatedText;
+    }
 
     return { data: { translatedText } };
   } catch (error) {
