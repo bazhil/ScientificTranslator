@@ -1,6 +1,7 @@
 # ScientificTranslator
 
-ScientificTranslator is a modern web application designed to help researchers, students, and professionals translate scientific texts with high accuracy while preserving document structure. Powered by GenAI, it provides seamless translation into multiple languages, ensuring that complex information is accessible across linguistic barriers.
+ScientificTranslator is a modern web application designed to help researchers, students, and professionals translate scientific texts with high accuracy while preserving document structure. 
+Powered by Gigachat, it provides seamless translation into multiple languages, ensuring that complex information is accessible across linguistic barriers.
 
 ## Core Features
 
@@ -24,7 +25,7 @@ Follow these instructions to get a copy of the project up and running on your lo
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/ScientificTranslator.git
+    git clone https://github.com/bazhil/ScientificTranslator.git
     cd ScientificTranslator
     ```
 
@@ -36,9 +37,14 @@ Follow these instructions to get a copy of the project up and running on your lo
 3.  **Set up environment variables:**
     An empty `.env` file has been created for you. Add your Google API key to it:
     ```
-    GOOGLE_API_KEY=YOUR_API_KEY_HERE
+    GIGA_CHAT_MODEL=GigaChat-2-Max
+    GIGA_CHAT_BASE_URL=https://gigachat.devices.sberbank.ru/api/v1
+    GIGA_CHAT_TOKEN_URL=https://ngw.devices.sberbank.ru:9443/api/v2/oauth
+    GIGA_CHAT_AUTH_KEY=
+    GAGA_CHAT_CLIENT_ID=
+    GIGA_CHAT_SCOPE=GIGACHAT_API_PERS
+    NODE_TLS_REJECT_UNAUTHORIZED=0
     ```
-    You can get your API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
 
 4.  **Run the development server:**
     ```bash
