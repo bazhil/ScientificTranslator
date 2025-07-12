@@ -1,7 +1,7 @@
 # ScientificTranslator
 
 ScientificTranslator is a modern web application designed to help researchers, students, and professionals translate scientific texts with high accuracy while preserving document structure. 
-Powered by Gigachat, it provides seamless translation into multiple languages, ensuring that complex information is accessible across linguistic barriers.
+Powered by GigaChat, it provides seamless translation into multiple languages, ensuring that complex information is accessible across linguistic barriers.
 
 ## Core Features
 
