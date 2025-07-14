@@ -60,14 +60,14 @@ This application is configured for easy deployment using Docker.
 
 ### Docker
 
-1.  **Build the Docker image:**
+1.  **Build the Docker:**
     ```bash
-    docker build -t scientific-translator .
+    docker compose up --build
     ```
 
 2.  **Run the Docker container:**
     ```bash
-    docker run -p 9002:9002 -d scientific-translator
+    docker compose down
     ```
 The application will be available at `http://localhost:9002`.
 
