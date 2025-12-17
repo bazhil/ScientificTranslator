@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect, useMemo } from "react";
 import {
   Card,
   CardContent,
@@ -10,6 +10,9 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
@@ -17,6 +20,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  RadioGroup,
+  RadioGroupItem,
+} from "@/components/ui/radio-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -27,8 +34,12 @@ import {
   Sparkles,
   Clipboard,
   ClipboardCheck,
+  Settings,
 } from "lucide-react";
 import { handleTranslation } from "@/app/actions";
+import { TranslationManager } from "@/lib/services/translation-manager";
+import { HuggingFaceTranslationService, HuggingFaceModel } from "@/lib/services/huggingface-translation-service";
+import { getHuggingFaceLanguageCode } from "@/lib/services/language-mapper";
 import mammoth from "mammoth";
 import * as pdfjsLib from "pdfjs-dist";
 
@@ -39,13 +50,31 @@ const languages = [
   "Spanish", "French", "German", "Japanese", "Chinese (Simplified)", "Russian", "Arabic", "Portuguese", "Italian", "Korean"
 ];
 
+type TranslationProvider = 'yandex' | 'huggingface';
+
 export function Translator() {
   const [originalText, setOriginalText] = useState("");
   const [translatedText, setTranslatedText] = useState("");
   const [targetLanguage, setTargetLanguage] = useState(languages[0]);
+  const [provider, setProvider] = useState<TranslationProvider>('yandex');
+  const [huggingfaceModel, setHuggingfaceModel] = useState<string>('facebook/m2m100_418M');
+  const [huggingfaceApiKey, setHuggingfaceApiKey] = useState<string>('');
+  const [availableModels, setAvailableModels] = useState<HuggingFaceModel[]>([]);
+  const [translationProgress, setTranslationProgress] = useState<{ progress: number; status: string; message?: string } | null>(null);
   const [isPending, startTransition] = useTransition();
   const [isCopied, setIsCopied] = useState(false);
   const { toast } = useToast();
+  
+  // Используем useMemo для создания сервисов один раз
+  const translationManager = useMemo(() => new TranslationManager(), []);
+  const huggingfaceService = useMemo(() => new HuggingFaceTranslationService(), []);
+
+  // Загружаем доступные модели при монтировании
+  useEffect(() => {
+    huggingfaceService.getAvailableModels().then(models => {
+      setAvailableModels(models);
+    });
+  }, [huggingfaceService]);
 
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -97,7 +126,7 @@ export function Translator() {
     }
   };
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (originalText.trim().length < 10) {
       toast({
@@ -108,42 +137,112 @@ export function Translator() {
       return;
     }
     
-    startTransition(async () => {
-      const formData = new FormData();
-      formData.append('text', originalText);
-      formData.append('targetLanguage', targetLanguage);
-      
-      const result = await handleTranslation(formData);
+    if (provider === 'yandex') {
+      // Используем существующий серверный action для Yandex
+      startTransition(async () => {
+        const formData = new FormData();
+        formData.append('text', originalText);
+        formData.append('targetLanguage', targetLanguage);
+        
+        const result = await handleTranslation(formData);
 
-      if (result.error) {
-        const errorMessage = result.error.text?.[0] || result.error.server?.[0] || "An unexpected error occurred.";
+        if (result.error) {
+          const errorMessage = result.error.text?.[0] || result.error.server?.[0] || "An unexpected error occurred.";
+          toast({
+            variant: "destructive",
+            title: "Translation Failed",
+            description: errorMessage,
+          });
+          setTranslatedText("");
+          setTranslationProgress(null);
+        } else if (result.data) {
+          setTranslatedText(result.data.translatedText);
+          setTranslationProgress({ progress: 100, status: 'completed', message: 'Translation completed' });
+          toast({
+            title: "Success",
+            description: "Text translated successfully.",
+          });
+        }
+      });
+    } else {
+      // Используем HuggingFace через клиентский сервис
+      setTranslationProgress({ progress: 0, status: 'loading', message: 'Starting translation...' });
+      setTranslatedText('');
+      
+      try {
+        const targetLangCode = getHuggingFaceLanguageCode(targetLanguage);
+        const result = await translationManager.translate(
+          originalText,
+          targetLangCode,
+          undefined, // sourceLanguage - автоопределение
+          huggingfaceModel,
+          {
+            apiKey: huggingfaceApiKey || undefined,
+            useInferenceAPI: true, // Используем Inference API по умолчанию
+          },
+          (progress) => {
+            setTranslationProgress({
+              progress: progress.progress,
+              status: progress.status,
+              message: progress.message,
+            });
+          }
+        );
+        
+        setTranslatedText(result.translatedText);
+        setTranslationProgress({ progress: 100, status: 'completed', message: 'Translation completed' });
+        toast({
+          title: "Success",
+          description: "Text translated successfully using HuggingFace.",
+        });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Translation failed';
+        setTranslationProgress({ progress: 0, status: 'error', message: errorMessage });
         toast({
           variant: "destructive",
           title: "Translation Failed",
           description: errorMessage,
         });
         setTranslatedText("");
-      } else if (result.data) {
-        setTranslatedText(result.data.translatedText);
-        toast({
-          title: "Success",
-          description: "Text translated successfully.",
-        });
       }
-    });
+    }
   };
 
-  const handleDownloadPdf = () => {
-    if (translatedText) {
-      window.print();
+  const handleDownloadPdf = async () => {
+    if (translatedText && originalText) {
+      try {
+        await translationManager.exportToFile(originalText, translatedText, 'pdf');
+        toast({
+          title: "Success",
+          description: "Translation exported to PDF.",
+        });
+      } catch (error) {
+        toast({
+          variant: "destructive",
+          title: "Export Failed",
+          description: error instanceof Error ? error.message : 'Failed to export PDF',
+        });
+      }
     }
   };
   
-  const handleCopyToClipboard = () => {
+  const handleCopyToClipboard = async () => {
     if (translatedText) {
-      navigator.clipboard.writeText(translatedText);
-      setIsCopied(true);
-      setTimeout(() => setIsCopied(false), 2000);
+      try {
+        await translationManager.copyToClipboard(translatedText);
+        setIsCopied(true);
+        setTimeout(() => setIsCopied(false), 2000);
+        toast({
+          title: "Copied",
+          description: "Translation copied to clipboard.",
+        });
+      } catch (error) {
+        toast({
+          variant: "destructive",
+          title: "Copy Failed",
+          description: "Failed to copy to clipboard.",
+        });
+      }
     }
   }
 
@@ -187,27 +286,91 @@ export function Translator() {
                 required
               />
 
-              <div className="space-y-2">
-                 <label className="text-sm font-medium flex items-center gap-2">
-                   <Languages className="text-primary"/>
-                   Translate to
-                 </label>
-                <Select value={targetLanguage} onValueChange={setTargetLanguage}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a language" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {languages.map((lang) => (
-                      <SelectItem key={lang} value={lang}>
-                        {lang}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium flex items-center gap-2">
+                    <Settings className="text-primary"/>
+                    Translation Provider
+                  </label>
+                  <RadioGroup value={provider} onValueChange={(value) => setProvider(value as TranslationProvider)}>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="yandex" id="yandex" />
+                      <Label htmlFor="yandex" className="cursor-pointer">Yandex SpeechKit</Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="huggingface" id="huggingface" />
+                      <Label htmlFor="huggingface" className="cursor-pointer">HuggingFace</Label>
+                    </div>
+                  </RadioGroup>
+                </div>
+
+                {provider === 'huggingface' && (
+                  <div className="space-y-3 p-4 border rounded-lg bg-muted/50">
+                    <div className="space-y-2">
+                      <Label htmlFor="hf-model" className="text-sm font-medium">HuggingFace Model</Label>
+                      <Select value={huggingfaceModel} onValueChange={setHuggingfaceModel}>
+                        <SelectTrigger id="hf-model">
+                          <SelectValue placeholder="Select a model" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableModels.map((model) => (
+                            <SelectItem key={model.id} value={model.id}>
+                              {model.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="hf-api-key" className="text-sm font-medium">
+                        HuggingFace API Key (Optional)
+                      </Label>
+                      <Input
+                        id="hf-api-key"
+                        type="password"
+                        placeholder="hf_..."
+                        value={huggingfaceApiKey}
+                        onChange={(e) => setHuggingfaceApiKey(e.target.value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Optional: API key for faster inference and higher rate limits
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                   <label className="text-sm font-medium flex items-center gap-2">
+                     <Languages className="text-primary"/>
+                     Translate to
+                   </label>
+                  <Select value={targetLanguage} onValueChange={setTargetLanguage}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a language" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {languages.map((lang) => (
+                        <SelectItem key={lang} value={lang}>
+                          {lang}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
-              <Button type="submit" disabled={isPending} className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-bold">
-                {isPending ? "Translating..." : "Translate"}
+              {translationProgress && (
+                <div className="space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">{translationProgress.message || 'Processing...'}</span>
+                    <span className="text-muted-foreground">{translationProgress.progress}%</span>
+                  </div>
+                  <Progress value={translationProgress.progress} />
+                </div>
+              )}
+
+              <Button type="submit" disabled={isPending || (translationProgress?.status === 'processing' || translationProgress?.status === 'loading')} className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-bold">
+                {isPending || translationProgress?.status === 'processing' || translationProgress?.status === 'loading' ? "Translating..." : "Translate"}
                 <Sparkles className="ml-2 h-4 w-4" />
               </Button>
             </form>
