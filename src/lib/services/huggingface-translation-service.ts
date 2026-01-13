@@ -32,12 +32,12 @@ export interface HuggingFaceModel {
 }
 
 export class HuggingFaceTranslationService {
-  private inferenceApiUrl = 'https://api-inference.huggingface.co/models';
+  private inferenceApiUrl = 'https://router.huggingface.co/models';
   private defaultModel = 'facebook/m2m100_418M';
   private cache = new Map<string, string>(); // Простое кэширование
 
   /**
-   * Переводит текст используя HuggingFace Inference API
+   * Переводит текст используя HuggingFace Inference API через Next.js API route
    */
   async translateWithInferenceAPI(
     text: string,
@@ -74,17 +74,6 @@ export class HuggingFaceTranslationService {
 
     try {
       const startTime = Date.now();
-      
-      // Формируем промпт для модели перевода
-      const prompt = this.formatTranslationPrompt(text, sourceLanguage, targetLanguage, modelId);
-      
-      const headers: HeadersInit = {
-        'Content-Type': 'application/json',
-      };
-      
-      if (apiKey) {
-        headers['Authorization'] = `Bearer ${apiKey}`;
-      }
 
       onProgress?.({
         progress: 30,
@@ -92,77 +81,24 @@ export class HuggingFaceTranslationService {
         message: 'Sending request to HuggingFace...'
       });
 
-      // Формируем параметры в зависимости от модели
-      const parameters: any = {
-        max_length: 512,
-      };
-
-      // Для моделей M2M100 и mBART нужны специальные параметры
-      if (modelId.includes('m2m100')) {
-        parameters.src_lang = sourceLanguage || 'en';
-        parameters.tgt_lang = targetLanguage;
-      } else if (modelId.includes('mbart')) {
-        // mBART использует специальные коды языков
-        parameters.src_lang = sourceLanguage || 'en_XX';
-        parameters.tgt_lang = this.getMBartLanguageCode(targetLanguage);
-      } else if (modelId.includes('mt5')) {
-        // mT5 использует промпт с указанием языков
-        const promptWithLang = `translate ${sourceLanguage || 'English'} to ${this.getLanguageName(targetLanguage)}: ${prompt}`;
-        const response = await fetch(`${this.inferenceApiUrl}/${modelId}`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            inputs: promptWithLang,
-            parameters,
-          }),
-        });
-        
-        if (!response.ok) {
-          if (response.status === 503) {
-            const retryAfter = response.headers.get('Retry-After') || '20';
-            throw new Error(`Model is loading. Please wait ${retryAfter} seconds and try again.`);
-          }
-          const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-          throw new Error(error.error || `HTTP ${response.status}`);
-        }
-        
-        const data = await response.json();
-        const translatedText = this.extractTranslationFromResponse(data, modelId);
-        const processingTime = Date.now() - startTime;
-        this.cache.set(cacheKey, translatedText);
-        
-        onProgress?.({
-          progress: 100,
-          status: 'completed',
-          message: 'Translation completed'
-        });
-        
-        return {
-          translatedText,
-          sourceLanguage,
-          targetLanguage,
-          model: modelId,
-          processingTime,
-        };
-      }
-
-      const response = await fetch(`${this.inferenceApiUrl}/${modelId}`, {
+      // Используем Next.js API route для обхода CORS
+      const response = await fetch('/api/translate/huggingface', {
         method: 'POST',
-        headers,
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
-          inputs: prompt,
-          parameters,
+          text,
+          targetLanguage,
+          sourceLanguage,
+          model: modelId,
+          apiKey,
         }),
       });
 
       if (!response.ok) {
-        if (response.status === 503) {
-          // Модель загружается, ждем
-          const retryAfter = response.headers.get('Retry-After') || '20';
-          throw new Error(`Model is loading. Please wait ${retryAfter} seconds and try again.`);
-        }
-        const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(error.error || `HTTP ${response.status}`);
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || `HTTP ${response.status}`);
       }
 
       onProgress?.({
@@ -172,8 +108,12 @@ export class HuggingFaceTranslationService {
       });
 
       const data = await response.json();
-      const translatedText = this.extractTranslationFromResponse(data, modelId);
+      const translatedText = data.translatedText;
       const processingTime = Date.now() - startTime;
+
+      if (!translatedText) {
+        throw new Error('No translation text received from API');
+      }
 
       // Сохраняем в кэш
       this.cache.set(cacheKey, translatedText);
@@ -303,8 +243,8 @@ export class HuggingFaceTranslationService {
       throw new Error('Text cannot be empty');
     }
 
-    // Для больших текстов разбиваем на части
-    const chunks = this.splitTextIntoChunks(text, 500); // 500 символов на чанк для API
+    // Для больших текстов разбиваем на части (максимум 1000 символов на чанк)
+    const chunks = this.splitTextIntoChunks(text, 1000);
     
     if (chunks.length === 1) {
       return this.translateChunk(
