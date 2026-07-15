@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const inferenceApiUrl = `https://router.huggingface.co/models/${model}`;
+    const inferenceApiUrl = `https://router.huggingface.co/hf-inference/models/${model}`;
     
     // Формируем параметры в зависимости от модели
     const parameters: any = {
@@ -38,69 +38,102 @@ export async function POST(request: NextRequest) {
       'Content-Type': 'application/json',
     };
 
-    if (apiKey) {
-      headers['Authorization'] = `Bearer ${apiKey}`;
+    const token = apiKey || process.env.HF_TOKEN;
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
 
-    // Создаем AbortController для таймаута
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 секунд таймаут
+    const maxAttempts = 2;
+    let lastError: unknown;
 
-    try {
-      const response = await fetch(inferenceApiUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          inputs,
-          parameters,
-        }),
-        signal: controller.signal,
-      });
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
 
-      clearTimeout(timeoutId);
+      try {
+        if (attempt > 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+        }
 
-      if (!response.ok) {
-        if (response.status === 503) {
-          const retryAfter = response.headers.get('Retry-After') || '20';
+        const response = await fetch(inferenceApiUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            inputs,
+            parameters,
+          }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          if (response.status === 503 && attempt < maxAttempts) {
+            lastError = new Error(`Model is loading`);
+            continue;
+          }
+
+          if (response.status === 503) {
+            const retryAfter = response.headers.get('Retry-After') || '20';
+            return NextResponse.json(
+              { error: `Model is loading. Please wait ${retryAfter} seconds and try again.` },
+              { status: 503 }
+            );
+          }
+
+          const errorText = await response.text();
+          let errorData;
+          try {
+            errorData = JSON.parse(errorText);
+          } catch {
+            errorData = { error: errorText || `HTTP ${response.status}` };
+          }
+
+          console.error('HuggingFace API error', {
+            status: response.status,
+            model,
+            textLength: text.length,
+            error: errorData,
+          });
+
           return NextResponse.json(
-            { error: `Model is loading. Please wait ${retryAfter} seconds and try again.` },
-            { status: 503 }
+            { error: errorData.error || errorData.message || `HTTP ${response.status}` },
+            { status: response.status }
           );
         }
-        
-        const errorText = await response.text();
-        let errorData;
-        try {
-          errorData = JSON.parse(errorText);
-        } catch {
-          errorData = { error: errorText || `HTTP ${response.status}` };
+
+        const data = await response.json();
+        const translatedText = extractTranslationFromResponse(data, model);
+
+        return NextResponse.json({
+          translatedText,
+          sourceLanguage,
+          targetLanguage,
+          model,
+        });
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId);
+        lastError = fetchError;
+        if (fetchError.name === 'AbortError' && attempt < maxAttempts) {
+          continue;
         }
-        
-        return NextResponse.json(
-          { error: errorData.error || errorData.message || `HTTP ${response.status}` },
-          { status: response.status }
-        );
+        if (fetchError.name === 'AbortError') {
+          return NextResponse.json(
+            { error: 'Request timeout. The translation took too long.' },
+            { status: 504 }
+          );
+        }
+        throw fetchError;
       }
-
-      const data = await response.json();
-      const translatedText = extractTranslationFromResponse(data, model);
-
-      return NextResponse.json({
-        translatedText,
-        sourceLanguage,
-        targetLanguage,
-        model,
-      });
-    } catch (fetchError: any) {
-      clearTimeout(timeoutId);
-      if (fetchError.name === 'AbortError') {
-        return NextResponse.json(
-          { error: 'Request timeout. The translation took too long.' },
-          { status: 504 }
-        );
-      }
-      throw fetchError;
     }
+
+    if (lastError instanceof Error && lastError.name === 'AbortError') {
+      return NextResponse.json(
+        { error: 'Request timeout. The translation took too long.' },
+        { status: 504 }
+      );
+    }
+    throw lastError instanceof Error ? lastError : new Error('Translation failed');
   } catch (error) {
     console.error('HuggingFace translation error:', error);
     return NextResponse.json(

@@ -57,7 +57,7 @@ export function Translator() {
   const [translatedText, setTranslatedText] = useState("");
   const [targetLanguage, setTargetLanguage] = useState(languages[0]);
   const [provider, setProvider] = useState<TranslationProvider>('yandex');
-  const [huggingfaceModel, setHuggingfaceModel] = useState<string>('facebook/m2m100_418M');
+  const [huggingfaceModel, setHuggingfaceModel] = useState<string>('Helsinki-NLP/opus-mt-en-ru');
   const [huggingfaceApiKey, setHuggingfaceApiKey] = useState<string>('');
   const [availableModels, setAvailableModels] = useState<HuggingFaceModel[]>([]);
   const [translationProgress, setTranslationProgress] = useState<{ progress: number; status: string; message?: string } | null>(null);

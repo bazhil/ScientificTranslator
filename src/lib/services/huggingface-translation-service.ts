@@ -33,7 +33,7 @@ export interface HuggingFaceModel {
 
 export class HuggingFaceTranslationService {
   private inferenceApiUrl = 'https://router.huggingface.co/models';
-  private defaultModel = 'facebook/m2m100_418M';
+  private defaultModel = 'Helsinki-NLP/opus-mt-en-ru';
   private cache = new Map<string, string>(); // Простое кэширование
 
   /**
@@ -132,11 +132,6 @@ export class HuggingFaceTranslationService {
         processingTime,
       };
     } catch (error) {
-      onProgress?.({
-        progress: 0,
-        status: 'error',
-        message: error instanceof Error ? error.message : 'Translation failed'
-      });
       throw error;
     }
   }
@@ -194,11 +189,10 @@ export class HuggingFaceTranslationService {
 
       const startTime = Date.now();
       
-      // Выполняем перевод
-      const result = await translator(text, {
+      const result: any = await translator(text, {
         src_lang: sourceLanguage || 'auto',
         tgt_lang: targetLanguage,
-      });
+      } as any);
 
       const processingTime = Date.now() - startTime;
       const translatedText = Array.isArray(result) 
@@ -244,10 +238,10 @@ export class HuggingFaceTranslationService {
     }
 
     // Для больших текстов разбиваем на части (максимум 1000 символов на чанк)
-    const chunks = this.splitTextIntoChunks(text, 1000);
+    const chunks = this.splitTextIntoChunks(text, 450);
     
     if (chunks.length === 1) {
-      return this.translateChunk(
+      return this.translateChunkWithRetry(
         chunks[0],
         targetLanguage,
         sourceLanguage,
@@ -267,27 +261,38 @@ export class HuggingFaceTranslationService {
     const translatedChunks: string[] = [];
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
-      const result = await this.translateChunk(
-        chunk,
-        targetLanguage,
-        sourceLanguage,
-        model,
-        config,
-        (progress) => {
-          const chunkProgress = progress.progress || 0;
-          const overallProgress = Math.round(
-            ((i / chunks.length) * 100) + (chunkProgress / chunks.length)
-          );
-          onProgress?.({
-            progress: overallProgress,
-            status: progress.status,
-            message: `Translating chunk ${i + 1} of ${chunks.length}...`
-          });
+      try {
+        const result = await this.translateChunkWithRetry(
+          chunk,
+          targetLanguage,
+          sourceLanguage,
+          model,
+          config,
+          (progress) => {
+            const chunkProgress = progress.progress || 0;
+            const overallProgress = Math.round(
+              ((i / chunks.length) * 100) + (chunkProgress / chunks.length)
+            );
+            onProgress?.({
+              progress: overallProgress,
+              status: 'processing',
+              message: progress.message || `Translating chunk ${i + 1} of ${chunks.length}...`
+            });
+          }
+        );
+        translatedChunks.push(result.translatedText);
+      } catch (error) {
+        if (!this.isRetryableError(error)) {
+          throw error;
         }
-      );
-      translatedChunks.push(result.translatedText);
-      
-      // Небольшая задержка между запросами для избежания rate limits
+        translatedChunks.push(chunk);
+        onProgress?.({
+          progress: Math.round(((i + 1) / chunks.length) * 100),
+          status: 'processing',
+          message: `Chunk ${i + 1} timed out, kept original and continued...`
+        });
+      }
+
       if (i < chunks.length - 1 && config?.useInferenceAPI !== false) {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
@@ -307,6 +312,115 @@ export class HuggingFaceTranslationService {
     };
   }
 
+  private isRetryableError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    return (
+      message.includes('timeout') ||
+      message.includes('took too long') ||
+      message.includes('model is loading') ||
+      message.includes('rate limit') ||
+      message.includes('503') ||
+      message.includes('504') ||
+      message.includes('429') ||
+      message.includes('fetch failed') ||
+      message.includes('network') ||
+      message.includes('econnreset') ||
+      message.includes('socket')
+    );
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private splitChunkInHalf(text: string): [string, string] {
+    const mid = Math.floor(text.length / 2);
+    let splitAt = text.lastIndexOf(' ', mid);
+    if (splitAt < Math.floor(text.length * 0.3)) {
+      splitAt = text.indexOf(' ', mid);
+    }
+    if (splitAt <= 0 || splitAt >= text.length - 1) {
+      splitAt = mid;
+    }
+    return [text.slice(0, splitAt).trim(), text.slice(splitAt).trim()];
+  }
+
+  private async translateChunkWithRetry(
+    text: string,
+    targetLanguage: string,
+    sourceLanguage?: string,
+    model?: string,
+    config?: { apiKey?: string; useInferenceAPI?: boolean },
+    onProgress?: (progress: TranslationProgress) => void,
+    depth = 0
+  ): Promise<TranslationResponse> {
+    const maxAttempts = 3;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        if (attempt > 1) {
+          onProgress?.({
+            progress: 20,
+            status: 'processing',
+            message: `Retrying after timeout (attempt ${attempt}/${maxAttempts})...`
+          });
+          await this.sleep(1000 * attempt);
+        }
+        return await this.translateChunk(
+          text,
+          targetLanguage,
+          sourceLanguage,
+          model,
+          config,
+          onProgress
+        );
+      } catch (error) {
+        lastError = error;
+        if (!this.isRetryableError(error) || attempt === maxAttempts) {
+          break;
+        }
+      }
+    }
+
+    if (this.isRetryableError(lastError) && text.length > 80 && depth < 3) {
+      const [left, right] = this.splitChunkInHalf(text);
+      if (left && right) {
+        onProgress?.({
+          progress: 30,
+          status: 'processing',
+          message: 'Chunk timed out, splitting and retrying...'
+        });
+        const leftResult = await this.translateChunkWithRetry(
+          left,
+          targetLanguage,
+          sourceLanguage,
+          model,
+          config,
+          onProgress,
+          depth + 1
+        );
+        const rightResult = await this.translateChunkWithRetry(
+          right,
+          targetLanguage,
+          sourceLanguage,
+          model,
+          config,
+          onProgress,
+          depth + 1
+        );
+        return {
+          translatedText: `${leftResult.translatedText} ${rightResult.translatedText}`.trim(),
+          sourceLanguage,
+          targetLanguage,
+          model: model || this.defaultModel,
+        };
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('Translation failed');
+  }
+
   private async translateChunk(
     text: string,
     targetLanguage: string,
@@ -315,7 +429,7 @@ export class HuggingFaceTranslationService {
     config?: { apiKey?: string; useInferenceAPI?: boolean },
     onProgress?: (progress: TranslationProgress) => void
   ): Promise<TranslationResponse> {
-    const useAPI = config?.useInferenceAPI !== false; // По умолчанию используем API
+    const useAPI = config?.useInferenceAPI !== false;
     
     if (useAPI) {
       return this.translateWithInferenceAPI(
@@ -342,9 +456,9 @@ export class HuggingFaceTranslationService {
    */
   private formatTranslationPrompt(
     text: string,
-    sourceLanguage?: string,
     targetLanguage: string,
-    modelId: string
+    modelId: string,
+    sourceLanguage?: string
   ): string {
     // Для моделей M2M100 и mBART нужен специальный формат
     if (modelId.includes('m2m100') || modelId.includes('mbart')) {
@@ -394,11 +508,21 @@ export class HuggingFaceTranslationService {
    */
   private splitTextIntoChunks(text: string, chunkSize: number): string[] {
     const chunks: string[] = [];
-    // Разбиваем по предложениям для лучшего качества перевода
     const sentences = text.match(/[^.!?]+[.!?]+/g) || text.match(/[^\n]+/g) || [text];
-    
+
     let currentChunk = '';
     for (const sentence of sentences) {
+      if (sentence.length > chunkSize) {
+        if (currentChunk.trim().length > 0) {
+          chunks.push(currentChunk.trim());
+          currentChunk = '';
+        }
+        for (let i = 0; i < sentence.length; i += chunkSize) {
+          chunks.push(sentence.slice(i, i + chunkSize).trim());
+        }
+        continue;
+      }
+
       if (currentChunk.length + sentence.length > chunkSize && currentChunk.length > 0) {
         chunks.push(currentChunk.trim());
         currentChunk = sentence;
@@ -406,12 +530,12 @@ export class HuggingFaceTranslationService {
         currentChunk += sentence;
       }
     }
-    
+
     if (currentChunk.trim().length > 0) {
       chunks.push(currentChunk.trim());
     }
-    
-    return chunks.length > 0 ? chunks : [text];
+
+    return chunks.length > 0 ? chunks.filter(Boolean) : [text];
   }
 
   /**
@@ -420,18 +544,6 @@ export class HuggingFaceTranslationService {
   async getAvailableModels(): Promise<HuggingFaceModel[]> {
     // Список популярных моделей перевода
     return [
-      {
-        id: 'facebook/m2m100_418M',
-        name: 'M2M100 418M (Multilingual)',
-        languages: ['en', 'ru', 'es', 'fr', 'de', 'zh', 'ja', 'ko', 'ar', 'hi', 'it', 'pt', 'pl', 'nl'],
-        task: 'translation'
-      },
-      {
-        id: 'facebook/mbart-large-50',
-        name: 'mBART Large 50',
-        languages: ['en', 'ru', 'es', 'fr', 'de', 'zh', 'ja', 'ko', 'ar', 'hi', 'it', 'pt', 'pl', 'nl'],
-        task: 'translation'
-      },
       {
         id: 'Helsinki-NLP/opus-mt-en-ru',
         name: 'Helsinki-NLP English-Russian',
@@ -445,10 +557,16 @@ export class HuggingFaceTranslationService {
         task: 'translation'
       },
       {
-        id: 'google/mt5-base',
-        name: 'mT5 Base (Multilingual)',
-        languages: ['en', 'ru', 'es', 'fr', 'de', 'zh', 'ja', 'ko', 'ar', 'hi'],
-        task: 'text2text-generation'
+        id: 'google-t5/t5-small',
+        name: 'T5 Small (EN→DE/FR/RO)',
+        languages: ['en', 'de', 'fr'],
+        task: 'translation'
+      },
+      {
+        id: 'google-t5/t5-base',
+        name: 'T5 Base (EN→DE/FR/RO)',
+        languages: ['en', 'de', 'fr'],
+        task: 'translation'
       }
     ];
   }
